@@ -49,25 +49,17 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": "True",
             "params_file": nav2_params_file,
-            # CRITICAL: We explicitly set 'map' to an empty string here
-            # to tell Nav2 not to try and load the map itself via the default loader.
             "map": TextSubstitution(text=""),
-            # This is the standard argument for Nav2's main lifecycle manager to
-            # manage other nodes. We are adding 'map_server' to this list.
             "autostart": "True",
         }.items(),
     )
 
     # --- 3. EXPLICIT MAP SERVER ---
-
-    # Node to load the map file explicitly using the LaunchConfiguration.
-    # It must be a LifecycleNode so the Nav2 lifecycle manager can handle it.
     map_server_node = LifecycleNode(
         package="nav2_map_server",
         executable="map_server",
         name="map_server",
         output="screen",
-        # CRITICAL: Using the LaunchConfiguration for the parameter
         parameters=[{"yaml_filename": map_yaml_config}],
         namespace="",
     )
@@ -80,7 +72,6 @@ def generate_launch_description():
         executable="waypoint_manager_node",
         name="waypoint_manager",
         output="screen",
-        # Parameter passing for the custom node to load waypoints
         parameters=[{"waypoint_config_file": waypoints_config_path}],
     )
 
@@ -94,7 +85,6 @@ def generate_launch_description():
 
     # --- 5. RViz Visualization ---
 
-    # Use the Nav2 default RViz configuration
     rviz_config_dir = PathJoinSubstitution(
         [pkg_nav2_bringup, "rviz", "nav2_default_view.rviz"]
     )
@@ -114,7 +104,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {
-                "use_gazebo_pose": False,  # or False for static pose
+                "use_gazebo_pose": False,
                 "default_x": -1.999942,
                 "default_y": -0.500001,
                 "default_yaw": 0.0,
@@ -130,7 +120,6 @@ def generate_launch_description():
             map_yaml_arg,
             log_map_path,
             start_world_cmd,
-            # Map Server MUST be started before nav2_bringup to be managed
             map_server_node,
             nav2_bringup_cmd,
             waypoint_manager_node,

@@ -16,7 +16,6 @@ from visualization_msgs.msg import Marker, MarkerArray
 # Helper function to convert Yaw (in radians) to a ROS Quaternion
 def euler_to_quaternion(yaw):
     """Converts a yaw angle (in radians) into a Quaternion message."""
-    # Since pitch and roll are 0 for 2D navigation, we only use yaw.
     q = quaternion_from_euler(0, 0, yaw)
     quaternion = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
     return quaternion
@@ -54,12 +53,9 @@ class WaypointManager(Node):
         self.current_waypoint_queue = []
 
         # 4. ROS Subscriptions and Publications
-        # FIX 1: Subscription for the list of waypoints
         self.create_subscription(
             String, "waypoint_queue", self.waypoint_queue_callback, 10
         )
-
-        # 💡 FIX 2: NEW Subscription for receiving the stop/cancel command
         self.create_subscription(
             String, "navigation_command", self.command_callback, 10
         )
@@ -72,14 +68,12 @@ class WaypointManager(Node):
         self.marker_publisher = self.create_publisher(
             MarkerArray, "/visualization_marker_array", 10
         )
-        # Publish markers periodically (1Hz) to ensure RViz loads them
         self.create_timer(1.0, self.publish_waypoint_markers)
 
     # ------------------------------------------------------------------------------
     # ROS 2 Callbacks (Run in the main ROS thread)
     # ------------------------------------------------------------------------------
 
-    # 💡 FIX 3: Added the necessary callback to receive the stop command
     def command_callback(self, msg):
         """
         Receives commands from the GUI (e.g., STOP or CANCEL).
@@ -96,7 +90,6 @@ class WaypointManager(Node):
         """
         Processes a comma-separated string of waypoint names received from the GUI.
         """
-        # The msg.data will be a string like: "station_a,station_b,home"
         waypoint_names = [
             name.strip().lower()  # Normalize name
             for name in msg.data.split(",")
@@ -107,22 +100,18 @@ class WaypointManager(Node):
             self.get_logger().warn("Received empty or invalid waypoint queue.")
             return
 
-        # Add 'home' as the final destination if it's not already the last one
         if waypoint_names[-1] != "home" and "home" in self.waypoints:
             waypoint_names.append("home")
 
         self.current_waypoint_queue = waypoint_names
         self.get_logger().info(f"Received new queue: {self.current_waypoint_queue}")
 
-        # Check if navigation is currently active using the threading.Event
         if self._nav_active.is_set():
             self.get_logger().warn(
                 "Navigation is already in progress. Ignoring new queue for now."
             )
             return
-
-        # Start the navigation sequence
-        self._nav_active.set()  # Set the flag to active
+        self._nav_active.set()
         self.waypoint_index = 0
         self.navigate_sequence()
 
@@ -186,21 +175,15 @@ class WaypointManager(Node):
         """
         Receives and processes real-time navigation feedback with throttling.
         """
-        # Define the minimum interval (e.g., 0.5 seconds = 2 Hz)
         THROTTLE_INTERVAL_SEC = 0.5
 
         current_time = self.get_clock().now()
         time_diff = current_time - self.last_feedback_time
 
-        # 💡 THROTTLING LOGIC: Only process if the interval has passed
         if time_diff.nanoseconds / 1e9 < THROTTLE_INTERVAL_SEC:
-            return  # Skip processing this feedback message
+            return
 
-        # Update the last publication time
         self.last_feedback_time = current_time
-
-        # --- Normal Feedback Processing (Only runs if not throttled) ---
-
         distance_remaining = feedback_msg.feedback.distance_remaining
 
         # Determine the name of the current waypoint
@@ -208,8 +191,6 @@ class WaypointManager(Node):
             current_wp_name = self.current_waypoint_queue[self.waypoint_index]
         else:
             current_wp_name = "Unknown"
-
-        # Format and publish a status update (only occurs every 0.5 seconds)
         status_text = (
             f"Navigating to {current_wp_name}... " f"Dist: {distance_remaining:.2f} m"
         )
@@ -219,7 +200,6 @@ class WaypointManager(Node):
 
     def goal_response_callback(self, future):
         """Handles the response after the goal is sent."""
-        # 💡 FIX 4: Added exception handling for goal response
         if future.exception() is not None:
             self.get_logger().error(
                 f"Goal response failed with exception: {future.exception()}"
@@ -238,12 +218,10 @@ class WaypointManager(Node):
             )
             return
 
-        # 💡 IMPORTANT: Wait for result (Non-blocking)
         self._goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         """Handles the final result after the goal is completed."""
-        # 💡 FIX 5: Added exception handling for goal result
         if future.exception() is not None:
             self.get_logger().error(
                 f"Goal result failed with exception: {future.exception()}"
@@ -263,16 +241,13 @@ class WaypointManager(Node):
             # Move to the next waypoint
             self.waypoint_index += 1
             self.navigate_sequence()  # RECURSIVE CALL: Starts the next goal
-        elif (
-            result.status == 8
-        ):  # 💡 FIX 6: Explicitly check for CANCELED status (result status 8)
+        elif result.status == 8:
             self.get_logger().warn(
                 f"Navigation to {current_wp_name} was CANCELED by the user."
             )
             self.status_publisher.publish(String(data=f"Cancelled: {current_wp_name}"))
             self.stop_navigation()  # Clean up sequence state
         else:
-            # Goal failed (status 5, 6, 7, etc.)
             self.get_logger().error(
                 f"Navigation to {current_wp_name} failed with status: {result.status}"
             )
@@ -305,8 +280,6 @@ class WaypointManager(Node):
     def publish_waypoint_markers(self):
         """Generates a MarkerArray for all waypoints and publishes it to RViz."""
         marker_array = MarkerArray()
-
-        # Optional: Delete all previous markers to ensure a clean display
         delete_all_marker = Marker()
         delete_all_marker.header.frame_id = "map"
         delete_all_marker.action = Marker.DELETEALL
@@ -326,13 +299,12 @@ class WaypointManager(Node):
 
             position_marker.pose.position.x = data["x"]
             position_marker.pose.position.y = data["y"]
-            position_marker.pose.position.z = 0.1  # Lift slightly above floor
+            position_marker.pose.position.z = 0.1
 
             position_marker.scale.x = 0.2
             position_marker.scale.y = 0.2
             position_marker.scale.z = 0.2
 
-            # Color based on name (e.g., green for 'home', blue for others)
             color = ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.8)  # Default Blue
             if name == "home":
                 color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)  # Green for Home
@@ -370,19 +342,13 @@ class WaypointManager(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-
-    # 🚨 Using MultiThreadedExecutor is safer when using internal threads
     executor = MultiThreadedExecutor()
-
     try:
         waypoint_manager = WaypointManager()
         executor.add_node(waypoint_manager)
-
-        # Spin the executor to process callbacks (subscriptions and action client responses)
         executor.spin()
 
     except FileNotFoundError as e:
-        # Check if waypoint_manager was created before trying to access its logger
         if "waypoint_manager" in locals():
             waypoint_manager.get_logger().fatal(f"FATAL ERROR: {e}")
         else:

@@ -13,13 +13,12 @@ class ROS2NodeThread(QThread):
     GUI from freezing. It contains all ROS 2 communication logic.
     """
 
-    status_signal = pyqtSignal(str)  # For general GUI status updates
+    status_signal = pyqtSignal(str)
     ready_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self._running = True
-        # Ensure rclpy is initialized once
         if not rclpy.ok():
             rclpy.init()
 
@@ -28,7 +27,6 @@ class ROS2NodeThread(QThread):
         self.amcl_ready = False
 
     def run(self):
-        # Create Node and Executor
         self.node = Node("waypoint_gui_node_thread")
         self.executor = MultiThreadedExecutor()
         self.executor.add_node(self.node)
@@ -43,7 +41,7 @@ class ROS2NodeThread(QThread):
         # 2. Command Publisher (NEW: For STOP/CANCEL)
         self.command_publisher = self.node.create_publisher(
             StringMsg,
-            "navigation_command",  # This topic receives the 'STOP' command
+            "navigation_command",
             10,
         )
 
@@ -67,7 +65,6 @@ class ROS2NodeThread(QThread):
         while rclpy.ok() and self._running:
             self.executor.spin_once(timeout_sec=0.01)
 
-        # Cleanup
         if self.node:
             self.node.destroy_node()
 
@@ -79,14 +76,13 @@ class ROS2NodeThread(QThread):
         """Passes status updates from the WaypointManager to the GUI."""
         self.status_signal.emit(msg.data)
 
-    def amcl_callback(self, msg):
+    def amcl_callback(self):
         """Checks if AMCL is publishing, indicating the navigation stack is up."""
         if not self.amcl_ready:
             self.amcl_ready = True
             self.node.get_logger().info("AMCL pose received. System considered ready.")
             self.status_signal.emit("System Ready. Navigation controls enabled.")
             self.ready_signal.emit()
-            # Unsubscribe after initial check to save resources
             self.node.destroy_subscription(self.amcl_subscriber)
 
     def publish_waypoint_queue(self, queue):

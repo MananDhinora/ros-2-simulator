@@ -51,7 +51,7 @@ class AutoInitialPose(Node):
             f"[AUTO INIT] Static initial pose sent: x={self.default_x:.2f}, y={self.default_y:.2f}, yaw={math.degrees(self.default_yaw):.1f}°"
         )
 
-        self.timer.cancel()  # only publish once
+        self.timer.cancel()
 
 
 def main(args=None):
