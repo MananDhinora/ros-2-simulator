@@ -1,12 +1,12 @@
 import sys
 import time
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer  # Import QTimer for better time handling
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QListWidget,
                              QListWidgetItem, QPushButton, QVBoxLayout,
                              QWidget)
 
-# Assuming ros_thread.py is in the correct package structure
+# Assuming ros_thread.py is in the same directory or accessible via package
 from waypoint_navigation.ros_thread import ROS2NodeThread
 
 
@@ -14,21 +14,22 @@ class WaypointGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TurtleBot3 Waypoint Commander")
-        self.setGeometry(100, 100, 400, 500)
+        self.setGeometry(100, 100, 400, 550)  # Increased height slightly
         self.init_ui()
         self.init_ros()
 
         # Initial state: Navigation controls disabled until AMCL is ready
         self.set_navigation_enabled(False)
 
+        # Timer for fetching current ROS time if needed (though not strictly necessary here)
+        self.ros_time_timer = QTimer(self)
+        self.ros_time_timer.timeout.connect(self.update_current_ros_time)
+        self.current_ros_time_sec = time.time()  # Start with system time
+
     def init_ui(self):
         main_layout = QVBoxLayout()
 
-        # --- 1. Placeholder for layout ---
-        loc_layout = QHBoxLayout()
-        main_layout.addLayout(loc_layout)
-
-        # --- 2. Waypoint Queue and Selection ---
+        # --- 1. Available Waypoint Buttons ---
         self.waypoint_names = [
             "station_a",
             "station_b",
@@ -38,18 +39,32 @@ class WaypointGUI(QWidget):
             "home",
         ]  # Matches YAML keys
 
+        main_layout.addWidget(QLabel("Available Waypoints:"))
+
+        # Waypoint selection buttons layout (2 columns)
+        button_grid_layout = QHBoxLayout()
+        # Create a widget to hold the grid and center it
+        button_container = QWidget()
+        button_container_layout = QVBoxLayout(button_container)
+
+        current_row_layout = QHBoxLayout()
+        for i, name in enumerate(self.waypoint_names):
+            btn = QPushButton(name.replace("_", " ").title())
+            btn.clicked.connect(lambda _, n=name: self.add_waypoint_to_queue(n))
+            current_row_layout.addWidget(btn)
+
+            # Start a new row after every 3 buttons
+            if (i + 1) % 3 == 0 or i == len(self.waypoint_names) - 1:
+                button_container_layout.addLayout(current_row_layout)
+                current_row_layout = QHBoxLayout()
+
+        main_layout.addWidget(button_container)
+
+        # --- 2. Waypoint Queue and Selection ---
         self.queue_list = QListWidget()
+        self.queue_list.setMaximumHeight(150)
         main_layout.addWidget(QLabel("Selected Waypoint Queue:"))
         main_layout.addWidget(self.queue_list)
-
-        # Waypoint selection buttons
-        button_layout = QHBoxLayout()
-        for name in self.waypoint_names:
-            btn = QPushButton(name.replace("_", " ").title())
-            # Fix lambda to ensure correct name binding
-            btn.clicked.connect(lambda _, n=name: self.add_waypoint_to_queue(n))
-            button_layout.addWidget(btn)
-        main_layout.addLayout(button_layout)
 
         # --- 3. Navigation Control Buttons ---
         control_layout = QHBoxLayout()
@@ -62,25 +77,27 @@ class WaypointGUI(QWidget):
         control_layout.addWidget(self.clear_btn)
 
         self.stop_btn = QPushButton("Stop/Cancel Navigation")
-        # 🛑 CONNECT TO THE NEW STOP FUNCTION
+        # 🟢 CONNECTED TO THE NEW STOP FUNCTION
         self.stop_btn.clicked.connect(self.stop_navigation)
         control_layout.addWidget(self.stop_btn)
 
         main_layout.addLayout(control_layout)
 
         # --- 4. Status Display ---
-        self.logs_widget = QListWidget()  # 👈 Use a QListWidget for a clean log
+        self.status_label = QLabel("Navigation Status: Initializing ROS...")
+        main_layout.addWidget(self.status_label)
+
+        self.logs_widget = QListWidget()  # Use a QListWidget for a clean log
         self.logs_widget.setMaximumHeight(150)  # Limit the size
         main_layout.addWidget(QLabel("Navigation Status Logs:"))
         main_layout.addWidget(self.logs_widget)
-        self.status_label = QLabel("Navigation Status: Initializing ROS...")
-        main_layout.addWidget(self.status_label)
 
         self.setLayout(main_layout)
 
     def init_ros(self):
+        # The ROS2NodeThread class is defined in ros_thread.py
         self.ros_thread = ROS2NodeThread()
-        # 🛑 status_signal will now receive updates from both ros_thread and waypoint_manager
+        # Connect signals from the ROS thread back to the GUI update methods
         self.ros_thread.status_signal.connect(self.update_status)
         self.ros_thread.ready_signal.connect(self.handle_amcl_ready)
         self.ros_thread.start()
@@ -89,18 +106,35 @@ class WaypointGUI(QWidget):
         """Enable/disable all navigation-related buttons."""
         self.start_btn.setEnabled(enabled)
         self.clear_btn.setEnabled(enabled)
-        self.stop_btn.setEnabled(enabled)
+        # Note: stop is enabled/disabled based on navigation state, but for this simple app, we keep it enabled
+        # The main logic is handled by the WaypointManager
+
+        # Enable all waypoint buttons
         for child in self.findChildren(QPushButton):
-            # Only enable waypoint selection buttons if the main controls are enabled
             if child not in [self.start_btn, self.clear_btn, self.stop_btn]:
                 child.setEnabled(enabled)
 
     def handle_amcl_ready(self):
         """Called when ROS 2 stack confirms AMCL/Nav2 is ready."""
         self.status_label.setText(
-            "Navigation Status: System Ready. Initial pose sent automatically."
+            "Navigation Status: System Ready. Select waypoints to begin."
         )
         self.set_navigation_enabled(True)
+        # Start timer to track ROS time (optional, but good practice)
+        self.ros_time_timer.start(100)  # Update every 100ms
+
+    def update_current_ros_time(self):
+        """Updates the internal ROS time representation."""
+        if self.ros_thread.node:
+            try:
+                # Get the time in nanoseconds and convert to seconds
+                time_nanosec = self.ros_thread.node.get_clock().now().nanoseconds
+                self.current_ros_time_sec = time_nanosec / 1e9
+            except Exception:
+                # Fallback to system time if ROS time is unavailable
+                self.current_ros_time_sec = time.time()
+        else:
+            self.current_ros_time_sec = time.time()
 
     def add_waypoint_to_queue(self, name):
         # The stored item text needs to match the key name for retrieval in start_navigation
@@ -122,39 +156,30 @@ class WaypointGUI(QWidget):
         else:
             self.status_label.setText("Navigation Status: Queue Empty!")
 
-    # In WaypointGUI class:
-
     def update_status(self, status_msg):
         """Updates the status log from signals received from the ROS thread."""
 
-        # 🛑 FIX: Correctly convert the ROS 2 Time object to seconds.
-        # ROS 2 time objects have a .nanoseconds attribute, which you convert to seconds.
-
-        # Get the time in nanoseconds
-        time_nanosec = self.ros_thread.node.get_clock().now().nanoseconds
-
-        # Convert nanoseconds to seconds (float)
-        current_time_sec = time_nanosec / 1e9
-
-        # Format the time
-        time_str = f"[{time.strftime('%H:%M:%S', time.localtime(current_time_sec))}]"
+        # Format the time using the last known ROS time
+        time_str = (
+            f"[{time.strftime('%H:%M:%S', time.localtime(self.current_ros_time_sec))}]"
+        )
 
         # Append the message to the logs
         self.logs_widget.addItem(f"{time_str} {status_msg}")
         self.logs_widget.scrollToBottom()  # Auto-scroll to the newest message
 
-        # Also update the primary status label (optional, but good for summary)
+        # Also update the primary status label
         self.status_label.setText(f"Navigation Status: {status_msg}")
 
-    # 🛑 NEW STOP NAVIGATION LOGIC
+    # 🟢 NEW STOP NAVIGATION LOGIC
     def stop_navigation(self):
         """Requests the ROS thread to send a cancellation signal."""
+        # Calls the method in ROS2NodeThread, which publishes 'STOP' to 'navigation_command'
         self.ros_thread.cancel_navigation()
-        self.status_label.setText(
-            "Navigation Status: Cancellation requested (Check Console)"
-        )
+        self.status_label.setText("Navigation Status: Cancellation requested.")
 
     def closeEvent(self, event):
+        self.ros_time_timer.stop()
         self.ros_thread.stop()
         self.ros_thread.wait()
         event.accept()
@@ -165,3 +190,7 @@ def main_gui():
     gui = WaypointGUI()
     gui.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main_gui()

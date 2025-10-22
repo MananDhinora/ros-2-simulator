@@ -7,7 +7,7 @@ from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
                             LogInfo)
 from launch.substitutions import (LaunchConfiguration, PathJoinSubstitution,
-                                  PythonExpression, TextSubstitution)
+                                  TextSubstitution)
 
 
 def generate_launch_description():

@@ -1,11 +1,9 @@
-import math
 import os
 import threading
-import time
 
 import rclpy
 import yaml
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import Quaternion
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
@@ -53,29 +51,46 @@ class WaypointManager(Node):
         self._nav_active = threading.Event()  # Used to check if nav is running
         self.waypoint_index = 0
         self.last_feedback_time = self.get_clock().now()
+        self.current_waypoint_queue = []
 
         # 4. ROS Subscriptions and Publications
-        # FIX 1: Changed subscription from "/waypoint_queue" to "waypoint_queue"
+        # FIX 1: Subscription for the list of waypoints
         self.create_subscription(
             String, "waypoint_queue", self.waypoint_queue_callback, 10
         )
+
+        # 💡 FIX 2: NEW Subscription for receiving the stop/cancel command
+        self.create_subscription(
+            String, "navigation_command", self.command_callback, 10
+        )
+
         self.status_publisher = self.create_publisher(String, "/navigation_status", 10)
 
         self.get_logger().info("Waypoint Manager Node running and listening for queue.")
-
-        self.current_waypoint_queue = []
 
         # 5. Marker Publisher (RViz)
         self.marker_publisher = self.create_publisher(
             MarkerArray, "/visualization_marker_array", 10
         )
+        # Publish markers periodically (1Hz) to ensure RViz loads them
         self.create_timer(1.0, self.publish_waypoint_markers)
-
-        # FIX 2: Removed erroneous self.get_logger.info("...") call.
 
     # ------------------------------------------------------------------------------
     # ROS 2 Callbacks (Run in the main ROS thread)
     # ------------------------------------------------------------------------------
+
+    # 💡 FIX 3: Added the necessary callback to receive the stop command
+    def command_callback(self, msg):
+        """
+        Receives commands from the GUI (e.g., STOP or CANCEL).
+        The GUI must publish a String message with data 'STOP' or 'CANCEL'
+        to the 'navigation_command' topic when the cancel button is pressed.
+        """
+        if msg.data.upper() in ["STOP", "CANCEL"]:
+            self.get_logger().warn("Received STOP command from user.")
+            self.stop_navigation()
+        else:
+            self.get_logger().warn(f"Received unknown command: {msg.data}")
 
     def waypoint_queue_callback(self, msg):
         """
@@ -106,13 +121,13 @@ class WaypointManager(Node):
             )
             return
 
-        # Start the navigation sequence in a separate thread to keep the ROS 2 executor spinning
+        # Start the navigation sequence
         self._nav_active.set()  # Set the flag to active
         self.waypoint_index = 0
         self.navigate_sequence()
 
     # ------------------------------------------------------------------------------
-    # Action Client Logic (Run in a separate thread)
+    # Action Client Logic
     # ------------------------------------------------------------------------------
 
     def navigate_sequence(self):
@@ -121,7 +136,7 @@ class WaypointManager(Node):
         The sequence is chained using callbacks (see get_result_callback).
         """
         if not self._nav_active.is_set():
-            self.get_logger().warn(
+            self.get_logger().info(
                 "Navigation sequence externally cancelled or complete."
             )
             return
@@ -163,7 +178,6 @@ class WaypointManager(Node):
             return
 
         # 3. Send Goal (Non-blocking)
-        # 💡 IMPORTANT: Goal response is handled by a callback, freeing the executor
         self._action_client.send_goal_async(
             goal_msg, feedback_callback=self.feedback_callback
         ).add_done_callback(self.goal_response_callback)
@@ -205,6 +219,14 @@ class WaypointManager(Node):
 
     def goal_response_callback(self, future):
         """Handles the response after the goal is sent."""
+        # 💡 FIX 4: Added exception handling for goal response
+        if future.exception() is not None:
+            self.get_logger().error(
+                f"Goal response failed with exception: {future.exception()}"
+            )
+            self.stop_navigation()
+            return
+
         self._goal_handle = future.result()
 
         if not self._goal_handle.accepted:
@@ -217,11 +239,18 @@ class WaypointManager(Node):
             return
 
         # 💡 IMPORTANT: Wait for result (Non-blocking)
-        # Result future is handled by the next callback, freeing the executor
         self._goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         """Handles the final result after the goal is completed."""
+        # 💡 FIX 5: Added exception handling for goal result
+        if future.exception() is not None:
+            self.get_logger().error(
+                f"Goal result failed with exception: {future.exception()}"
+            )
+            self.stop_navigation()
+            return
+
         result = future.result()
         current_wp_name = self.current_waypoint_queue[self.waypoint_index]
         self._goal_handle = None
@@ -233,9 +262,17 @@ class WaypointManager(Node):
 
             # Move to the next waypoint
             self.waypoint_index += 1
-            self.navigate_sequence()  # 💡 RECURSIVE CALL: Starts the next goal
+            self.navigate_sequence()  # RECURSIVE CALL: Starts the next goal
+        elif (
+            result.status == 8
+        ):  # 💡 FIX 6: Explicitly check for CANCELED status (result status 8)
+            self.get_logger().warn(
+                f"Navigation to {current_wp_name} was CANCELED by the user."
+            )
+            self.status_publisher.publish(String(data=f"Cancelled: {current_wp_name}"))
+            self.stop_navigation()  # Clean up sequence state
         else:
-            # Goal failed
+            # Goal failed (status 5, 6, 7, etc.)
             self.get_logger().error(
                 f"Navigation to {current_wp_name} failed with status: {result.status}"
             )
@@ -248,11 +285,13 @@ class WaypointManager(Node):
         """
         Cancels the current active navigation goal and stops the sequence.
         """
-        self._nav_active.clear()  # Clear the event to stop the thread loop
+        # 1. Immediately block new sequence goals
+        self._nav_active.clear()
 
+        # 2. Attempt to cancel the action goal
         if self._action_client.server_is_ready() and self._goal_handle:
             self.get_logger().info("Cancelling current navigation goal...")
-            # We don't need to block on the cancel, as the thread will exit shortly
+            # Cancelling asynchronously is non-blocking and safe
             self._action_client.cancel_goal_async(self._goal_handle)
             self._goal_handle = None
             self.status_publisher.publish(String(data="Cancelled by User"))
@@ -260,6 +299,7 @@ class WaypointManager(Node):
             self.get_logger().warn(
                 "No active goal or action server not ready to cancel."
             )
+            self._goal_handle = None
             self.status_publisher.publish(String(data="Navigation Stopped"))
 
     def publish_waypoint_markers(self):
